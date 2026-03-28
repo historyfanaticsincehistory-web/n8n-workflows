@@ -3,6 +3,7 @@
 .anthropic-key
 *.key
 api_keys.txt
+API_KEYS.md
 
 # Node modules
 node_modules/

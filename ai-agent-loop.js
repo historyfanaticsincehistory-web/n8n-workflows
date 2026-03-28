@@ -18,7 +18,7 @@ const path = require('path');
 const CONFIG = {
   // API Keys (uit environment of config)
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || fs.readFileSync(path.join(__dirname, '.openai-key'), 'utf8').trim(),
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || (fs.existsSync(path.join(__dirname, '.anthropic-key')) ? fs.readFileSync(path.join(__dirname, '.anthropic-key'), 'utf8').trim() : ''),
   N8N_API_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDQxMTgwZi01N2Y4LTQ2NjYtOGUwOS0xNWExMDVlM2YxZGIiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwiaWF0IjoxNzcyMjg4NDk4fQ.HfLVdoO8ZdFPILqGNe43wOuxBkOE-k1FS8_-UCFL7xs',
 
   // URLs
