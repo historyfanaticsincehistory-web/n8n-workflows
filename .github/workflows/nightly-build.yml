@@ -1,0 +1,52 @@
+name: Nightly AI Build
+
+on:
+  schedule:
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+  issues:
+    types: [labeled]
+
+jobs:
+  build:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || contains(github.event.issue.labels.*.name, 'build')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get open build issues
+        id: issues
+        run: |
+          echo "Fetching issues with label 'build'..."
+          # GitHub CLI haalt issues op
+
+      - name: Codex Build
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          echo "Codex bouwt workflow..."
+          # Hier komt Codex API call
+
+      - name: Claude Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "Claude reviewt..."
+          # Hier komt Claude API call
+
+      - name: Run tests
+        run: |
+          echo "Tests draaien..."
+          # Validatie van workflow JSON
+
+      - name: Create PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "AI Builder"
+          git config user.email "ai@builder.local"
+          git checkout -b "build/$(date +%Y%m%d)"
+          git add .
+          git commit -m "AI built workflow" || exit 0
+          gh pr create --title "Nightly Build $(date +%Y-%m-%d)" --body "AI-generated workflow. Review and approve."

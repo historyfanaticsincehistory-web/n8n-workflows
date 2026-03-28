@@ -1,0 +1,38 @@
+name: Build Request
+description: Vraag de AI agents om een workflow te bouwen
+labels: ["build"]
+
+body:
+  - type: textarea
+    id: output
+    attributes:
+      label: Gewenste output
+      description: Beschrijf wat de workflow moet doen
+      placeholder: "Ik wil een workflow die..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: Input
+      description: Wat is de input voor deze workflow?
+      placeholder: "De workflow ontvangt..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Eisen
+      options:
+        - label: Moet lokaal draaien (geen cloud services)
+        - label: Moet met bestaande n8n nodes
+        - label: Moet webhooks gebruiken
+        - label: Moet scheduled draaien
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Extra context
+      description: Andere relevante info
