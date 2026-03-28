@@ -1,0 +1,22 @@
+# API Keys - NOOIT committen
+.openai-key
+.anthropic-key
+*.key
+api_keys.txt
+
+# Node modules
+node_modules/
+
+# Output workflows (gegenereerd door AI loop)
+workflows/*.json
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
