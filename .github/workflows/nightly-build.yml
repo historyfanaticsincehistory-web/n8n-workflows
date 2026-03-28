@@ -15,38 +15,207 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Get open build issues
         id: issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Fetching issues with label 'build'..."
-          # GitHub CLI haalt issues op
+          # Haal alle open issues met label 'build'
+          ISSUES=$(gh issue list --label build --state open --json number,title,body --limit 10)
+          echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+          echo "Found issues: $ISSUES"
 
-      - name: Codex Build
+      - name: Process issues with AI
+        if: steps.issues.outputs.issues != '[]'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          echo "Codex bouwt workflow..."
-          # Hier komt Codex API call
-
-      - name: Claude Review
-        env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          echo "Claude reviewt..."
-          # Hier komt Claude API call
+          mkdir -p workflows
 
-      - name: Run tests
-        run: |
-          echo "Tests draaien..."
-          # Validatie van workflow JSON
+          # Parse issues en verwerk ze
+          echo '${{ steps.issues.outputs.issues }}' | jq -c '.[]' | while read issue; do
+            ISSUE_NUM=$(echo $issue | jq -r '.number')
+            ISSUE_TITLE=$(echo $issue | jq -r '.title')
+            ISSUE_BODY=$(echo $issue | jq -r '.body')
+
+            echo "Processing issue #$ISSUE_NUM: $ISSUE_TITLE"
+
+            # ============================================
+            # STAP 1: Codex/GPT-4 bouwt de workflow
+            # ============================================
+
+            CODEX_RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $OPENAI_API_KEY" \
+              -d @- << EOF
+            {
+              "model": "gpt-4o",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "Je bent een n8n workflow expert. Je bouwt valide n8n workflow JSON bestanden.\n\nREGELS:\n1. Output ALLEEN valide JSON (geen markdown, geen uitleg)\n2. Elke node moet id, name, type, typeVersion, position, parameters hebben\n3. Connections moeten correct verwijzen naar node names\n4. Gebruik typeVersion die n8n ondersteunt\n5. Geen hardcoded secrets\n\nVoorbeeld node structuur:\n{\n  \"id\": \"uuid-here\",\n  \"name\": \"Node Name\",\n  \"type\": \"n8n-nodes-base.httpRequest\",\n  \"typeVersion\": 4.2,\n  \"position\": [250, 300],\n  \"parameters\": {}\n}"
+                },
+                {
+                  "role": "user",
+                  "content": "Bouw een n8n workflow voor:\n\nTITEL: $ISSUE_TITLE\n\nBESCHRIJVING:\n$ISSUE_BODY\n\nOutput alleen de workflow JSON."
+                }
+              ],
+              "temperature": 0.3,
+              "max_tokens": 8000
+            }
+EOF
+            )
+
+            # Extract workflow JSON from response
+            WORKFLOW_JSON=$(echo "$CODEX_RESPONSE" | jq -r '.choices[0].message.content')
+
+            # Check of het valide JSON is
+            if echo "$WORKFLOW_JSON" | jq . > /dev/null 2>&1; then
+              echo "Codex generated valid JSON"
+            else
+              echo "Warning: Codex output is not valid JSON, attempting to extract..."
+              # Probeer JSON te extracten uit markdown blocks
+              WORKFLOW_JSON=$(echo "$WORKFLOW_JSON" | sed -n '/```json/,/```/p' | sed '1d;$d')
+            fi
+
+            # ============================================
+            # STAP 2: Claude reviewt de workflow
+            # ============================================
+
+            CLAUDE_RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+              -H "Content-Type: application/json" \
+              -H "x-api-key: $ANTHROPIC_API_KEY" \
+              -H "anthropic-version: 2023-06-01" \
+              -d @- << EOF
+            {
+              "model": "claude-sonnet-4-20250514",
+              "max_tokens": 4000,
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Review deze n8n workflow JSON en geef feedback.\n\nORIGINELE VRAAG:\n$ISSUE_TITLE\n$ISSUE_BODY\n\nWORKFLOW JSON:\n$WORKFLOW_JSON\n\nCHECK:\n1. Zijn alle verplichte velden aanwezig (id, name, type, typeVersion, position, parameters)?\n2. Zijn de connections correct?\n3. Voldoet het aan de vraag?\n4. Zijn er security issues?\n\nAntwoord in dit formaat:\n{\n  \"approved\": true/false,\n  \"score\": 1-10,\n  \"issues\": [\"issue 1\", \"issue 2\"],\n  \"suggestions\": [\"suggestion 1\"],\n  \"fixed_workflow\": null of verbeterde JSON als nodig\n}"
+                }
+              ]
+            }
+EOF
+            )
+
+            REVIEW=$(echo "$CLAUDE_RESPONSE" | jq -r '.content[0].text')
+            APPROVED=$(echo "$REVIEW" | jq -r '.approved // false')
+            SCORE=$(echo "$REVIEW" | jq -r '.score // 0')
+
+            echo "Claude review: approved=$APPROVED, score=$SCORE"
+
+            # Gebruik fixed_workflow als Claude verbeteringen had
+            FIXED=$(echo "$REVIEW" | jq -r '.fixed_workflow // null')
+            if [ "$FIXED" != "null" ] && [ -n "$FIXED" ]; then
+              WORKFLOW_JSON="$FIXED"
+              echo "Using Claude's fixed workflow"
+            fi
+
+            # ============================================
+            # STAP 3: Sla workflow op
+            # ============================================
+
+            FILENAME="workflows/issue_${ISSUE_NUM}_$(date +%Y%m%d).json"
+            echo "$WORKFLOW_JSON" | jq . > "$FILENAME" 2>/dev/null || echo "$WORKFLOW_JSON" > "$FILENAME"
+
+            # Maak review rapport
+            cat > "workflows/issue_${ISSUE_NUM}_review.md" << REVIEW_EOF
+          # Review Issue #$ISSUE_NUM
+
+          **Titel:** $ISSUE_TITLE
+          **Datum:** $(date +%Y-%m-%d)
+
+          ## Codex Build
+          - Model: gpt-4o
+          - Output: $FILENAME
+
+          ## Claude Review
+          - Approved: $APPROVED
+          - Score: $SCORE/10
+
+          ### Issues
+          $(echo "$REVIEW" | jq -r '.issues[]? // "Geen issues"' | sed 's/^/- /')
+
+          ### Suggestions
+          $(echo "$REVIEW" | jq -r '.suggestions[]? // "Geen suggesties"' | sed 's/^/- /')
+          REVIEW_EOF
+
+            echo "Saved: $FILENAME"
+          done
 
       - name: Create PR
+        if: steps.issues.outputs.issues != '[]'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Check of er wijzigingen zijn
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
           git config user.name "AI Builder"
           git config user.email "ai@builder.local"
-          git checkout -b "build/$(date +%Y%m%d)"
+
+          BRANCH="build/$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
           git add .
-          git commit -m "AI built workflow" || exit 0
-          gh pr create --title "Nightly Build $(date +%Y-%m-%d)" --body "AI-generated workflow. Review and approve."
+          git commit -m "AI built workflows $(date +%Y-%m-%d)
+
+          Built by: GPT-4o (Codex)
+          Reviewed by: Claude Sonnet
+
+          Co-Authored-By: GPT-4o <noreply@openai.com>
+          Co-Authored-By: Claude <noreply@anthropic.com>"
+
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "🤖 AI Built Workflows $(date +%Y-%m-%d)" \
+            --body "## Automatisch gegenereerde workflows
+
+          Deze PR bevat workflows gebouwd door AI agents:
+
+          1. **GPT-4o** bouwde de initiële workflow JSON
+          2. **Claude** reviewde en verbeterde waar nodig
+
+          ### Bestanden
+          $(ls -1 workflows/*.json 2>/dev/null | sed 's/^/- /')
+
+          ### Reviews
+          $(ls -1 workflows/*_review.md 2>/dev/null | sed 's/^/- /')
+
+          ---
+          ⚠️ **Review deze workflows voordat je ze importeert in n8n!**
+
+          🤖 Generated with AI Builder" \
+            --label "ai-generated"
+
+      - name: Comment on issues
+        if: steps.issues.outputs.issues != '[]'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '${{ steps.issues.outputs.issues }}' | jq -c '.[]' | while read issue; do
+            ISSUE_NUM=$(echo $issue | jq -r '.number')
+
+            gh issue comment $ISSUE_NUM --body "🤖 **AI Build Complete**
+
+          Je workflow is gebouwd en staat klaar voor review in een PR.
+
+          - **Builder:** GPT-4o
+          - **Reviewer:** Claude Sonnet
+
+          Check de open PRs voor het resultaat.
+
+          ---
+          _Automatisch gegenereerd door AI Builder_"
+          done
